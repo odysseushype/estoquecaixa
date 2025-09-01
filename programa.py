@@ -354,13 +354,35 @@ def processar_excel(uploaded_file, tipo="novo"):
 # =========================
 # Layout principal
 # =========================
-col_prog, col_estoque = st.columns([1, 1])
+col_prog, col_estoque, col_prog_ant = st.columns([1, 1, 1])
 
 with col_prog:
-    uploaded_file = st.file_uploader("Selecione o arquivo Excel principal", type=["xlsx"])
+    uploaded_file = st.file_uploader("📂 Selecione o arquivo Excel principal", type=["xlsx"])
 
 with col_estoque:
     uploaded_stock_file = st.file_uploader("📦 Arquivo de Estoque", type=["xlsx", "csv"])
+
+with col_prog_ant:
+    uploaded_old_file = st.file_uploader("🔄 Arquivo do Programa Anterior", type=["xlsx"])
+
+# Inicializar variáveis para o programa anterior
+df_antigo = None
+df_antigo_expandidos = None
+
+# Processar programa anterior se for carregado
+if uploaded_old_file:
+    with st.spinner("Processando programa anterior..."):
+        # Processar programa anterior
+        df_antigo = processar_excel(uploaded_old_file, tipo="antigo")
+        
+        # Expandir programa anterior
+        df_antigo_expandidos = pd.concat([expandir_producao(row) for _,row in df_antigo.iterrows()], ignore_index=True)
+        
+        if not df_antigo_expandidos.empty:
+            df_antigo_expandidos['Dia Entrega'] = pd.to_datetime(df_antigo_expandidos['Dia Entrega'])
+            st.success("✅ Programa anterior processado com sucesso")
+        else:
+            st.warning("⚠️ Programa anterior não contém dados válidos para exibição.")
 
 # Inicializar mapa de estoque e histórico
 mapa_estoque = {}
@@ -488,11 +510,37 @@ if uploaded_file:
                 # Filtrar dados apenas para este fornecedor
                 df_forn = df_expandidos[df_expandidos['Fornecedor'] == fornecedor]
                 
+                # Filtrar dados do programa anterior para este fornecedor, se disponível
+                df_forn_antigo = None
+                if df_antigo_expandidos is not None:
+                    df_forn_antigo = df_antigo_expandidos[df_antigo_expandidos['Fornecedor'] == fornecedor]
+                
                 # Total de caixas para o fornecedor
                 total_forn = df_forn['Quantidade'].sum()
                 
-                # Exibir o total
-                st.write(f"**Total de caixas: {total_forn:.2f}**")
+                # Mostrar totais comparativos se tiver programa anterior
+                if df_forn_antigo is not None:
+                    total_forn_antigo = df_forn_antigo['Quantidade'].sum()
+                    variacao = total_forn - total_forn_antigo
+                    
+                    # Mostrar totais em formato de métricas
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.metric(
+                            "Total de caixas (programa atual)", 
+                            f"{total_forn:.0f}"
+                        )
+                    with col2:
+                        delta_color = "normal" if variacao >= 0 else "inverse"
+                        st.metric(
+                            "Variação em relação ao programa anterior", 
+                            f"{total_forn:.0f}",
+                            delta=f"{variacao:+.0f}",
+                            delta_color=delta_color
+                        )
+                else:
+                    # Exibir o total normal sem comparativo
+                    st.write(f"**Total de caixas: {total_forn:.0f}**")
                 
                 # Preparar dados para visualização semanal
                 df_semana = df_forn.copy()
@@ -523,6 +571,14 @@ if uploaded_file:
                                 (df_forn['Dia Entrega'].dt.isocalendar().year == ano)
                             ]
                             
+                            # Filtrar dados do programa anterior para esta semana, se disponível
+                            df_semana_antiga = None
+                            if df_forn_antigo is not None:
+                                df_semana_antiga = df_forn_antigo[
+                                    (df_forn_antigo['Dia Entrega'].dt.isocalendar().week == semana_num) &
+                                    (df_forn_antigo['Dia Entrega'].dt.isocalendar().year == ano)
+                                ]
+                            
                             # Obter datas únicas na semana
                             datas_unicas = sorted(df_semana_atual['Dia Entrega'].dt.date.unique())
                             
@@ -542,62 +598,145 @@ if uploaded_file:
                                     # Filtrar dados apenas para este dia
                                     df_dia = df_semana_atual[df_semana_atual['Dia Entrega'].dt.date == data]
                                     
+                                    # Filtrar dados do programa anterior para este dia, se disponível
+                                    df_dia_antigo = None
+                                    if df_semana_antiga is not None:
+                                        df_dia_antigo = df_semana_antiga[df_semana_antiga['Dia Entrega'].dt.date == data]
+                                    
                                     # Calcular total do dia
                                     total_dia = df_dia['Quantidade'].sum()
                                     
                                     # Agrupar caixas do mesmo tipo e somar quantidades
                                     df_caixas_agrupadas = df_dia.groupby('Caixa')['Quantidade'].sum().reset_index()
                                     
-                                    # Listar itens do dia com verificação de estoque
-                                    itens_dia = []
-                                    for _, row in df_caixas_agrupadas.iterrows():
-                                        caixa = row['Caixa']
-                                        qtd_total = row['Quantidade']
+                                    # AQUI ESTÁ A MODIFICAÇÃO PRINCIPAL: 
+                                    # Em vez de filtrar o programa anterior apenas pela data exata,
+                                    # vamos considerar todas as datas do programa anterior para este fornecedor
+                                    caixas_antigas = {}
+                                    total_dia_antigo = 0
+
+                                    if df_forn_antigo is not None and not df_forn_antigo.empty:
+                                        # Criar um dicionário com TODAS as caixas do programa anterior para este fornecedor
+                                        df_caixas_antigas_geral = df_forn_antigo.groupby('Caixa')['Quantidade'].sum().reset_index()
+                                        caixas_antigas_geral = dict(zip(df_caixas_antigas_geral['Caixa'], df_caixas_antigas_geral['Quantidade']))
                                         
-                                        # Verificar estoque
-                                        tem_estoque = False
-                                        estoque_disponivel = 0
-                                        quantidade_faltante = 0
-                                        
-                                        if caixa in mapa_estoque:
-                                            estoque_inicial = mapa_estoque.get(caixa, 0)
-                                            consumido_ate_agora = estoque_consumido_global.get(caixa, 0)
-                                            estoque_disponivel = estoque_inicial - consumido_ate_agora
-                                            
-                                            if estoque_disponivel >= qtd_total:
-                                                # Há estoque suficiente
-                                                tem_estoque = True
-                                                estoque_consumido_global[caixa] = consumido_ate_agora + qtd_total
-                                                quantidade_faltante = 0
-                                            else:
-                                                # Estoque insuficiente, mas vamos consumir o que tem
-                                                tem_estoque = False
-                                                # Consumir o estoque disponível
-                                                quantidade_consumida = max(0, estoque_disponivel)
-                                                estoque_consumido_global[caixa] = consumido_ate_agora + quantidade_consumida
-                                                # Calcular quantidade que faltará
-                                                quantidade_faltante = qtd_total - quantidade_consumida
+                                        # Verificar se temos dados específicos para esta data no programa anterior
+                                        df_dia_antigo = df_forn_antigo[df_forn_antigo['Dia Entrega'].dt.date == data]
+                                        if not df_dia_antigo.empty:
+                                            # Se temos dados para esta data específica, usar eles
+                                            df_caixas_antigas = df_dia_antigo.groupby('Caixa')['Quantidade'].sum().reset_index()
+                                            caixas_antigas = dict(zip(df_caixas_antigas['Caixa'], df_caixas_antigas['Quantidade']))
+                                            total_dia_antigo = df_dia_antigo['Quantidade'].sum()
+                                            data_existe_no_programa_anterior = True
                                         else:
-                                            # Item não existe no estoque
-                                            quantidade_faltante = qtd_total
-                                        
-                                        # Adicionar à lista de itens formatados
-                                        estoque_emoji = "✅" if tem_estoque else "⚠️"
-                                        
-                                        if tem_estoque:
-                                            itens_dia.append(f"{estoque_emoji} **{caixa}** | Qtd: {qtd_total:.0f} | Estoque: {max(0, estoque_disponivel):.0f}")
-                                        else:
-                                            # Mostrar quanto falta quando não há estoque suficiente
-                                            itens_dia.append(f"{estoque_emoji} **{caixa}** | Qtd: {qtd_total:.0f} | Estoque: {max(0, estoque_disponivel):.0f} | **Falta: {quantidade_faltante:.0f}**")
+                                            # Se não temos dados para esta data específica, mostrar opção de usar comparação global
+                                            data_existe_no_programa_anterior = False
                                     
                                     # Exibir bloco no layout
                                     with cols[col_idx]:
+                                        # Cabeçalho com data
                                         st.markdown(f"**{data.strftime('%d/%m/%Y')} ({data.strftime('%a')})**")
-                                        st.metric(
-                                            label="Total de Caixas", 
-                                            value=f"{total_dia:.0f}",
-                                            delta=None
-                                        )
+                                        
+                                        # Calcular variação em relação ao programa anterior para este dia
+                                        if df_dia_antigo is not None:
+                                            # ADICIONAR ESTA LINHA PARA DEPURAÇÃO
+                                            st.write(f"_Itens no programa anterior para esta data: {len(df_dia_antigo)}_")
+                                            
+                                            total_dia_antigo = df_dia_antigo['Quantidade'].sum()
+                                            variacao_dia = total_dia - total_dia_antigo
+                                            delta_color = "normal" if variacao_dia >= 0 else "inverse"
+                                            
+                                            st.metric(
+                                                label="Total de Caixas", 
+                                                value=f"{total_dia:.0f}",
+                                                delta=f"{variacao_dia:+.0f}",
+                                                delta_color=delta_color
+                                            )
+                                        else:
+                                            # Sem comparativo - todos os itens serão novos neste caso
+                                            st.metric(
+                                                label="Total de Caixas", 
+                                                value=f"{total_dia:.0f}",
+                                                delta=None
+                                            )
+                                            st.write("_Sem dados do programa anterior para esta data_")
+                                        
+                                        # Aqui é onde criamos a lista de itens com indicadores:
+                                        itens_dia = []
+                                        for _, row in df_caixas_agrupadas.iterrows():
+                                            caixa = row['Caixa']
+                                            qtd_total = row['Quantidade']
+                                            
+                                            # CORRIGIR A COMPARAÇÃO
+                                            status_alteracao = ""
+                                            qtd_antiga = 0
+                                            
+                                            # IMPORTANTE: Verificar se df_dia_antigo existe e tem dados
+                                            if df_dia_antigo is not None and not df_dia_antigo.empty:
+                                                # Verificar diretamente no DataFrame original, não só no dicionário
+                                                caixa_anterior = df_dia_antigo[df_dia_antigo['Caixa'] == caixa]
+                                                
+                                                if not caixa_anterior.empty:
+                                                    qtd_antiga = caixa_anterior['Quantidade'].sum()
+                                                    if qtd_total > qtd_antiga:
+                                                        status_alteracao = "⬆️ "  # Aumentou
+                                                    elif qtd_total < qtd_antiga:
+                                                        status_alteracao = "⬇️ "  # Diminuiu
+                                                else:
+                                                    status_alteracao = "🆕 "  # Novo item
+                                            else:
+                                                # Se não há dados do programa anterior para este dia, 
+                                                # não marcar como novo (pois não temos como comparar)
+                                                status_alteracao = ""
+                                            
+                                            # Verificar estoque
+                                            tem_estoque = False
+                                            estoque_disponivel = 0
+                                            quantidade_faltante = 0
+                                            
+                                            if caixa in mapa_estoque:
+                                                estoque_inicial = mapa_estoque.get(caixa, 0)
+                                                consumido_ate_agora = estoque_consumido_global.get(caixa, 0)
+                                                estoque_disponivel = estoque_inicial - consumido_ate_agora
+                                                
+                                                if estoque_disponivel >= qtd_total:
+                                                    # Há estoque suficiente
+                                                    tem_estoque = True
+                                                    estoque_consumido_global[caixa] = consumido_ate_agora + qtd_total
+                                                    quantidade_faltante = 0
+                                                else:
+                                                    # Estoque insuficiente, mas vamos consumir o que tem
+                                                    tem_estoque = False
+                                                    # Consumir o estoque disponível
+                                                    quantidade_consumida = max(0, estoque_disponivel)
+                                                    estoque_consumido_global[caixa] = consumido_ate_agora + quantidade_consumida
+                                                    # Calcular quantidade que faltará
+                                                    quantidade_faltante = qtd_total - quantidade_consumida
+                                            else:
+                                                # Item não existe no estoque
+                                                quantidade_faltante = qtd_total
+                                            
+                                            # Adicionar à lista de itens formatados
+                                            estoque_emoji = "✅" if tem_estoque else "⚠️"
+                                            
+                                            # Mostrar informação de comparativo se disponível
+                                            info_comparativo = ""
+                                            if status_alteracao and status_alteracao != "🆕 " and qtd_antiga > 0:
+                                                info_comparativo = f" (Antes: {qtd_antiga:.0f})"
+                                            
+                                            if tem_estoque:
+                                                itens_dia.append(f"{estoque_emoji} {status_alteracao}**{caixa}** | Qtd: {qtd_total:.0f}{info_comparativo} | Estoque: {max(0, estoque_disponivel):.0f}")
+                                            else:
+                                                # Mostrar quanto falta quando não há estoque suficiente
+                                                itens_dia.append(f"{estoque_emoji} {status_alteracao}**{caixa}** | Qtd: {qtd_total:.0f}{info_comparativo} | Estoque: {max(0, estoque_disponivel):.0f} | **Falta: {quantidade_faltante:.0f}**")
+                                        
+                                        # Identificar itens removidos do programa anterior
+                                        if df_dia_antigo is not None:
+                                            caixas_atuais = set(df_caixas_agrupadas['Caixa'])
+                                            for caixa_antiga, qtd_antiga in caixas_antigas.items():
+                                                if caixa_antiga not in caixas_atuais:
+                                                    # Esta caixa foi removida do programa atual
+                                                    itens_dia.append(f"❌ **{caixa_antiga}** | Removido (Antes: {qtd_antiga:.0f})")
                                         
                                         # Mostrar lista de itens
                                         if itens_dia:
@@ -605,9 +744,191 @@ if uploaded_file:
                                                 st.markdown(item)
                                         else:
                                             st.info("Sem itens")
+                                
+                                # Adicionar legenda dos símbolos após os dias
+                                st.markdown("---")
+                                st.markdown("**Legenda:**")
+                                col1, col2, col3, col4, col5 = st.columns(5)
+                                with col1:
+                                    st.markdown("✅ - Estoque suficiente")
+                                with col2:
+                                    st.markdown("⚠️ - Estoque insuficiente")
+                                with col3:
+                                    st.markdown("🆕 - Item novo")
+                                with col4:
+                                    st.markdown("⬆️/⬇️ - Alteração de quantidade")
+                                with col5:
+                                    st.markdown("❌ - Item removido")
+                                    
                             else:
                                 st.info("Sem dados para esta semana")
                         except Exception as e:
                             st.error(f"Erro ao processar semana {semana_str}: {str(e)}")
 else:
     st.info("📂 Faça o upload do arquivo Excel principal para visualizar o cronograma.")
+
+# =========================
+# Adicionar comparativo com programa antigo (após visualização principal)
+# =========================
+
+if uploaded_file and not df_expandidos.empty and uploaded_old_file and df_antigo is not None:
+    st.divider()
+    st.subheader("🔄 Comparação com Programa Anterior")
+    
+    # Mostrar programa antigo em expansor
+    with st.expander("📋 Programa Anterior (limpo)"):
+        st.dataframe(df_antigo, use_container_width=True)
+        st.download_button("⬇️ Baixar Programa Anterior (CSV)", 
+                          gerar_csv(df_antigo), 
+                          "programa_anterior.csv", 
+                          mime="text/csv")
+
+    # Criar campos para comparação
+    df_novo['Ordem-split'] = df_novo['Ordem / oper / split / Descrição'].astype(str).str.strip()
+    df_antigo['Ordem-split'] = df_antigo['Ordem / oper / split / Descrição'].astype(str).str.strip()
+
+    # Agrupar por ordem-split (primeira ocorrência)
+    df_novo_first = df_novo.groupby('Ordem-split', as_index=False).first()
+    df_antigo_first = df_antigo.groupby('Ordem-split', as_index=False).first()
+
+    # Criar três colunas para mostrar os comparativos
+    col1, col2 = st.columns(2)
+    
+    # Coluna 1: Itens Novos
+    with col1:
+        st.markdown("### 🆕 Itens Novos")
+        novos = df_novo_first[~df_novo_first['Ordem-split'].isin(df_antigo_first['Ordem-split'])]
+        if not novos.empty:
+            # Criar cópia para formatação
+            novos_display = novos.copy()
+            # Formatar a quantidade como inteiro
+            novos_display['Quantidade'] = novos_display['Quantidade'].fillna(0).astype(int)
+            
+            st.dataframe(novos_display[['Ordem-split', 'Item/descrição', 'Inicio', 'Caixa', 'Quantidade']], 
+                        use_container_width=True)
+            st.download_button("⬇️ Baixar Itens Novos", 
+                              gerar_csv(novos), 
+                              "itens_novos.csv", 
+                              mime="text/csv")
+            st.info(f"Total de itens novos: {len(novos)}")
+        else:
+            st.info("Nenhum item novo detectado.")
+
+    # Coluna 2: Itens Removidos
+    with col2:
+        st.markdown("### 🗑️ Itens Removidos")
+        removidos = df_antigo_first[~df_antigo_first['Ordem-split'].isin(df_novo_first['Ordem-split'])]
+        if not removidos.empty:
+            # Criar cópia para formatação
+            removidos_display = removidos.copy()
+            # Formatar a quantidade como inteiro
+            removidos_display['Quantidade'] = removidos_display['Quantidade'].fillna(0).astype(int)
+            
+            st.dataframe(removidos_display[['Ordem-split', 'Item/descrição', 'Inicio', 'Caixa', 'Quantidade']],
+                        use_container_width=True)
+            st.download_button("⬇️ Baixar Itens Removidos", 
+                              gerar_csv(removidos), 
+                              "itens_removidos.csv", 
+                              mime="text/csv")
+            st.info(f"Total de itens removidos: {len(removidos)}")
+        else:
+            st.info("Nenhum item foi removido.")
+
+    # Itens com mudanças de data
+    st.markdown("### ⏱️ Itens com Alterações de Data")
+    
+    # Juntar tabelas para comparar datas
+    df_merge = pd.merge(
+        df_novo_first[['Ordem-split', 'Item/descrição', 'Inicio', 'Termino', 'Quantidade']],
+        df_antigo_first[['Ordem-split', 'Inicio', 'Termino', 'Quantidade']],
+        on='Ordem-split',
+        suffixes=('_novo', '_antigo')
+    )
+    
+    # Filtrar apenas os que tiveram mudança de data
+    alterados_data = df_merge[
+        (df_merge['Inicio_novo'] != df_merge['Inicio_antigo']) | 
+        (df_merge['Termino_novo'] != df_merge['Termino_antigo'])
+    ]
+    
+    # Criar tabela de comparação
+    if not alterados_data.empty:
+        # Formatar para visualização
+        df_alterados = alterados_data.copy()
+        
+        # Calcular diferenças em horas
+        df_alterados['Dif_Inicio_Horas'] = (df_alterados['Inicio_novo'] - df_alterados['Inicio_antigo']).dt.total_seconds() / 3600
+        
+        # Converter diferença de horas para formato HH:MM
+        def horas_para_hhmm(horas):
+            # Preservar o sinal
+            sinal = '-' if horas < 0 else ''
+            horas_abs = abs(horas)
+            horas_int = int(horas_abs)
+            minutos = int((horas_abs - horas_int) * 60)
+            return f"{sinal}{horas_int:02d}:{minutos:02d}"
+        
+        # Criar coluna formatada para exibição
+        df_alterados['Diferença'] = df_alterados['Dif_Inicio_Horas'].apply(horas_para_hhmm)
+        
+        # ADICIONAR EXPLICITAMENTE a classificação das alterações
+        df_alterados['Status'] = df_alterados.apply(
+            lambda x: "Antecipado" if x['Dif_Inicio_Horas'] < -12 else 
+                    ("Adiado" if x['Dif_Inicio_Horas'] > 12 else "Alteração Menor"),
+            axis=1
+        )
+        
+        # Formatar datas para visualização
+        for col in ['Inicio_novo', 'Inicio_antigo']:
+            df_alterados[col] = df_alterados[col].dt.strftime('%d/%m/%Y %H:%M')
+        
+        # Renomear colunas para nomes mais claros
+        colunas_renomeadas = {
+            'Ordem-split': 'Ordem',
+            'Item/descrição': 'Descrição',
+            'Inicio_antigo': 'Data Anterior',
+            'Inicio_novo': 'Data Atual',
+            'Diferença': 'Diferença (HH:MM)',
+            'Status': 'Status'
+        }
+        
+        # Criar abas para visualizar por tipo de alteração
+        status_tabs = st.tabs(["Todas Alterações", "Antecipados", "Adiados"])
+        
+        with status_tabs[0]:
+            st.dataframe(
+                df_alterados[['Ordem-split', 'Item/descrição', 'Inicio_antigo', 'Inicio_novo', 
+                             'Diferença', 'Status']].rename(columns=colunas_renomeadas),
+                use_container_width=True
+            )
+            st.download_button("⬇️ Baixar Todas Alterações", 
+                              gerar_csv(df_alterados), 
+                              "todas_alteracoes.csv", 
+                              mime="text/csv")
+            st.info(f"Total de itens com alterações de data: {len(df_alterados)}")
+        
+        with status_tabs[1]:
+            # Filtrar após garantir que a coluna existe
+            antecipados = df_alterados[df_alterados['Status'] == 'Antecipado']
+            if not antecipados.empty:
+                st.dataframe(
+                    antecipados[['Ordem-split', 'Item/descrição', 'Inicio_antigo', 'Inicio_novo', 
+                                'Diferença']].rename(columns=colunas_renomeadas),
+                    use_container_width=True
+                )
+                st.info(f"Itens antecipados: {len(antecipados)}")
+            else:
+                st.info("Nenhum item antecipado.")
+        
+        with status_tabs[2]:
+            # Usar a coluna Status para filtrar
+            adiados = df_alterados[df_alterados['Status'] == "Adiado"]
+            if not adiados.empty:
+                st.dataframe(
+                    adiados[['Ordem-split', 'Item/descrição', 'Inicio_antigo', 'Inicio_novo', 
+                            'Diferença']].rename(columns=colunas_renomeadas),
+                    use_container_width=True
+                )
+                st.info(f"Itens adiados: {len(adiados)}")
+            else:
+                st.info("Nenhum item adiado.")

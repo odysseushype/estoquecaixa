@@ -398,30 +398,6 @@ if uploaded_stock_file:
     total_itens = len(mapa_estoque)
     quantidade_total = sum(mapa_estoque.values())
     
-    # REMOVER ESTE BLOCO: Não extrair data do nome do arquivo 
-    # data_estoque = None
-    # nome_arquivo = uploaded_stock_file.name
-    # date_match = re.search(r'.*?(\d{2})[-_](\d{2})[-_](\d{4})', nome_arquivo)
-    # if date_match:
-    #     dia, mes, ano = date_match.groups()
-    #     data_estoque = f"{dia}/{mes}/{ano}"
-    # else:
-    #     data_estoque = "Data não identificada"
-    
-    # REMOVER ESTE BLOCO: Não recalcular variação usando histórico de sessão
-    # variacao_total = None
-    # if st.session_state.historico_estoque:
-    #     estoque_anterior = st.session_state.historico_estoque[-1]
-    #     qtd_anterior = sum(estoque_anterior.values())
-    #     variacao_total = quantidade_total - qtd_anterior
-    #     variacao_percentual = (variacao_total / qtd_anterior) * 100 if qtd_anterior > 0 else 0
-    
-    # Salvar no histórico apenas se for útil para outras funções
-    # (pode ser removido se não for necessário)
-    if data_estoque and data_estoque not in st.session_state.datas_estoque:
-        st.session_state.historico_estoque.append(mapa_estoque.copy())
-        st.session_state.datas_estoque.append(data_estoque)
-    
     # Mostrar resumo do estoque em um expansor
     with st.expander("📦 Resumo do Estoque"):
         # Layout em colunas para as métricas
@@ -492,29 +468,7 @@ if uploaded_file:
             st.download_button("⬇️ Baixar Programa Expandido (CSV)", gerar_csv(df_expandidos), "programa_expandido.csv", mime="text/csv")
         else:
             st.warning("Nenhum dado para exibir.")
-        # =========================
-        # Removidos globais (todos fornecedores)
-        # =========================
-        if df_antigo_expandidos is not None and not df_expandidos.empty:
-            caixas_atuais_global = set(df_expandidos['Caixa'])
-            caixas_antigas_global = set(df_antigo_expandidos['Caixa'])
-            caixas_removidas_global = caixas_antigas_global - caixas_atuais_global
-        
-            removidos_info_global = []
-            for caixa_antiga in caixas_removidas_global:
-                qtd_antiga = df_antigo_expandidos[df_antigo_expandidos['Caixa'] == caixa_antiga]['Quantidade'].sum()
-                estoque_inicial_removido = mapa_estoque.get(caixa_antiga, 0)
-                consumido_ate_agora_removido = 0  # Se quiser considerar consumo global, pode somar das semanas
-                estoque_disponivel_removido = estoque_inicial_removido - consumido_ate_agora_removido
-                estoque_emoji = "✅" if estoque_disponivel_removido > 0 else "⚠️"
-                removidos_info_global.append(
-                    f"{estoque_emoji} ❌ **{caixa_antiga}** | Estoque: {max(0, estoque_disponivel_removido):.0f} | Removido (Antes: {qtd_antiga:.0f})"
-                )
-        
-            if removidos_info_global:
-                st.markdown("## ❌ Itens removidos de todos os fornecedores (programa anterior)")
-                for info in removidos_info_global:
-                    st.markdown(info)
+    
     # =========================
     # Dados por Fornecedor (NOVO)
     # =========================
@@ -609,11 +563,22 @@ if uploaded_file:
                                 datas_unicas = [data for data in datas_unicas 
                                               if data >= data_programa.date()]
                             
-                            if len(datas_unicas) > 0:
+                            # Se houver dados do programa anterior, adicione suas datas também
+                            datas_antigas_adicionais = []
+                            if df_semana_antiga is not None and not df_semana_antiga.empty:
+                                datas_antigas = sorted(df_semana_antiga['Dia Entrega'].dt.date.unique())
+                                if data_programa is not None:
+                                    datas_antigas = [data for data in datas_antigas if data >= data_programa.date()]
+                                datas_antigas_adicionais = [data for data in datas_antigas if data not in datas_unicas]
+                            
+                            # Combine as datas e ordene
+                            todas_datas = sorted(list(datas_unicas) + datas_antigas_adicionais)
+                            
+                            if len(todas_datas) > 0:
                                 # Criar colunas lado a lado para cada dia
-                                cols = st.columns(min(len(datas_unicas), 5))  # Máximo de 5 colunas por linha
+                                cols = st.columns(min(len(todas_datas), 5))  # Máximo de 5 colunas por linha
                                 
-                                for idx, data in enumerate(datas_unicas):
+                                for idx, data in enumerate(todas_datas):
                                     # Definir em qual coluna este dia será exibido
                                     col_idx = idx % len(cols)
                                     
@@ -631,28 +596,34 @@ if uploaded_file:
                                     # Agrupar caixas do mesmo tipo e somar quantidades
                                     df_caixas_agrupadas = df_dia.groupby('Caixa')['Quantidade'].sum().reset_index()
                                     
-                                    # AQUI ESTÁ A MODIFICAÇÃO PRINCIPAL: 
-                                    # Em vez de filtrar o programa anterior apenas pela data exata,
-                                    # vamos considerar todas as datas do programa anterior para este fornecedor
-                                    caixas_antigas = {}
-                                    total_dia_antigo = 0
-                                   
+                                    # Criar um dicionário com TODAS as caixas do programa anterior para este fornecedor
+                                    caixas_antigas_geral = {}
                                     if df_forn_antigo is not None and not df_forn_antigo.empty:
-                                        # Criar um dicionário com TODAS as caixas do programa anterior para este fornecedor
                                         df_caixas_antigas_geral = df_forn_antigo.groupby('Caixa')['Quantidade'].sum().reset_index()
                                         caixas_antigas_geral = dict(zip(df_caixas_antigas_geral['Caixa'], df_caixas_antigas_geral['Quantidade']))
+                                    
+                                    # Verificar se temos dados específicos para esta data no programa anterior
+                                    caixas_antigas = {}
+                                    total_dia_antigo = 0
+                                    data_existe_no_programa_anterior = False
+                                    
+                                    if df_dia_antigo is not None and not df_dia_antigo.empty:
+                                        # Se temos dados para esta data específica, usar eles
+                                        df_caixas_antigas = df_dia_antigo.groupby('Caixa')['Quantidade'].sum().reset_index()
+                                        caixas_antigas = dict(zip(df_caixas_antigas['Caixa'], df_caixas_antigas['Quantidade']))
+                                        total_dia_antigo = df_dia_antigo['Quantidade'].sum()
+                                        data_existe_no_programa_anterior = True
+                                    
+                                    # Encontrar caixas que foram removidas do programa anterior para este dia
+                                    caixas_removidas = {}
+                                    if df_dia_antigo is not None and not df_dia_antigo.empty:
+                                        caixas_atuais = set(df_caixas_agrupadas['Caixa'])
+                                        caixas_antigas_set = set(df_caixas_antigas['Caixa'])
+                                        caixas_removidas_set = caixas_antigas_set - caixas_atuais
                                         
-                                        # Verificar se temos dados específicos para esta data no programa anterior
-                                        df_dia_antigo = df_forn_antigo[df_forn_antigo['Dia Entrega'].dt.date == data]
-                                        if not df_dia_antigo.empty:
-                                            # Se temos dados para esta data específica, usar eles
-                                            df_caixas_antigas = df_dia_antigo.groupby('Caixa')['Quantidade'].sum().reset_index()
-                                            caixas_antigas = dict(zip(df_caixas_antigas['Caixa'], df_caixas_antigas['Quantidade']))
-                                            total_dia_antigo = df_dia_antigo['Quantidade'].sum()
-                                            data_existe_no_programa_anterior = True
-                                        else:
-                                            # Se não temos dados para esta data específica, mostrar opção de usar comparação global
-                                            data_existe_no_programa_anterior = False
+                                        for caixa in caixas_removidas_set:
+                                            qtd = caixas_antigas.get(caixa, 0)
+                                            caixas_removidas[caixa] = qtd
                                     
                                     # Exibir bloco no layout
                                     with cols[col_idx]:
@@ -660,10 +631,7 @@ if uploaded_file:
                                         st.markdown(f"**{data.strftime('%d/%m/%Y')} ({data.strftime('%a')})**")
                                         
                                         # Calcular variação em relação ao programa anterior para este dia
-                                        if df_dia_antigo is not None:
-                                            # ADICIONAR ESTA LINHA PARA DEPURAÇÃO
-                                            st.write(f"_Itens no programa anterior para esta data: {len(df_dia_antigo)}_")
-                                            
+                                        if df_dia_antigo is not None and not df_dia_antigo.empty:
                                             total_dia_antigo = df_dia_antigo['Quantidade'].sum()
                                             variacao_dia = total_dia - total_dia_antigo
                                             delta_color = "normal" if variacao_dia >= 0 else "inverse"
@@ -681,10 +649,16 @@ if uploaded_file:
                                                 value=f"{total_dia:.0f}",
                                                 delta=None
                                             )
-                                            st.write("_Sem dados do programa anterior para esta data_")
+                                            
+                                            # Apenas mostrar que não há dados anteriores se houver
+                                            # apenas caixas atuais (sem caixas removidas)
+                                            if len(caixas_removidas) == 0:
+                                                st.write("_Sem dados do programa anterior para esta data_")
                                         
                                         # Aqui é onde criamos a lista de itens com indicadores:
                                         itens_dia = []
+                                        
+                                        # Primeiro adicionar itens atuais
                                         for _, row in df_caixas_agrupadas.iterrows():
                                             caixa = row['Caixa']
                                             qtd_total = row['Quantidade']
@@ -750,8 +724,18 @@ if uploaded_file:
                                                 itens_dia.append(f"{estoque_emoji} {status_alteracao}**{caixa}** | Qtd: {qtd_total:.0f}{info_comparativo} | Estoque: {max(0, estoque_disponivel):.0f}")
                                             else:
                                                 # Mostrar quanto falta quando não há estoque suficiente
-                                                itens_dia.append(f"{estoque_emoji} {status_alteracao}**{caixa}** | Qtd: {qtd_total:.0f}{info_comparativo} | Estoque: {max(0, estoque_disponivel):.0f} | **Falta: {quantidade_faltante:.0f}**")
+                                                itens_dia.append(f"{estoque_emoji} {status_alteracao}**{caixa}** | Qtd: {qtd_total:.0f}{info_comparativo} | Estoque: {max(0, estoque_disponivel):.0f} | Faltam: {quantidade_faltante:.0f}")
                                         
+                                        # Depois adicionar itens removidos
+                                        for caixa, qtd_removida in caixas_removidas.items():
+                                            # Verificar estoque para itens removidos
+                                            estoque_inicial_removido = mapa_estoque.get(caixa, 0)
+                                            consumido_ate_agora_removido = estoque_consumido_global.get(caixa, 0)
+                                            estoque_disponivel_removido = estoque_inicial_removido - consumido_ate_agora_removido
+                                            estoque_emoji = "✅" if estoque_disponivel_removido > 0 else "⚠️"
+                                            
+                                            # Adicionar item removido à lista com marcador especial
+                                            itens_dia.append(f"{estoque_emoji} ❌ **{caixa}** | Removido (Antes: {qtd_removida:.0f}) | Estoque: {max(0, estoque_disponivel_removido):.0f}")
 
                                         # Mostrar lista de itens
                                         if itens_dia:
@@ -947,15 +931,3 @@ if uploaded_file and not df_expandidos.empty and uploaded_old_file and df_antigo
                 st.info(f"Itens adiados: {len(adiados)}")
             else:
                 st.info("Nenhum item adiado.")
-
-
-
-
-
-
-
-
-
-
-
-

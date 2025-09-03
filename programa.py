@@ -736,7 +736,7 @@ if uploaded_file:
                                             for caixa_antiga, qtd_antiga in caixas_antigas.items():
                                                 if caixa_antiga not in caixas_atuais:
                                                     # Esta caixa foi removida do programa atual
-                                                    itens_dia.append(f"❌ **{caixa_antiga}** | Removido (Antes: {qtd_antiga:.0f})")
+                                                    itens_dia.append(f"[{estoque_emoji} ❌ **{caixa_antiga}** | Removido (Antes: {qtd_antiga:.0f})")
                                         
                                         # Mostrar lista de itens
                                         if itens_dia:
@@ -932,3 +932,4 @@ if uploaded_file and not df_expandidos.empty and uploaded_old_file and df_antigo
                 st.info(f"Itens adiados: {len(adiados)}")
             else:
                 st.info("Nenhum item adiado.")
+

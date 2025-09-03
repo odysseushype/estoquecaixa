@@ -732,16 +732,14 @@ if uploaded_file:
                                         
                                         # Identificar itens removidos do programa anterior
                                        if df_dia_antigo is not None:
-                                            caixas_atuais = set(df_caixas_agrupadas['Caixa'])
-                                            for caixa_antiga, qtd_antiga in caixas_antigas.items():
-                                                if caixa_antiga not in caixas_atuais:
-                                                    # Calcular estoque disponível corretamente para a caixa removida
-                                                    estoque_inicial_removido = mapa_estoque.get(caixa_antiga, 0)
-                                                    consumido_ate_agora_removido = estoque_consumido_global.get(caixa_antiga, 0)
-                                                    estoque_disponivel_removido = estoque_inicial_removido - consumido_ate_agora_removido
-                                        
-                                                    itens_dia.append(
-                                                        f"{estoque_emoji} ❌ **{caixa_antiga}** | Estoque: {max(0, estoque_disponivel_removido):.0f} | Removido (Antes: {qtd_antiga:.0f} )"
+                                           caixas_atuais = set(df_caixas_agrupadas['Caixa'])
+                                           for caixa_antiga, qtd_antiga in caixas_antigas.items():
+                                               if caixa_antiga not in caixas_atuais:
+                                                   # Calcular estoque disponível corretamente para a caixa removida
+                                                   estoque_inicial_removido = mapa_estoque.get(caixa_antiga, 0)
+                                                   consumido_ate_agora_removido = estoque_consumido_global.get(caixa_antiga, 0)
+                                                   estoque_disponivel_removido = estoque_inicial_removido - consumido_ate_agora_removido
+                                                    itens_dia.append(f"{estoque_emoji} ❌ **{caixa_antiga}** | Estoque: {max(0, estoque_disponivel_removido):.0f} | Removido (Antes: {qtd_antiga:.0f} )"
                                                     )
                                         # Mostrar lista de itens
                                         if itens_dia:
@@ -937,6 +935,7 @@ if uploaded_file and not df_expandidos.empty and uploaded_old_file and df_antigo
                 st.info(f"Itens adiados: {len(adiados)}")
             else:
                 st.info("Nenhum item adiado.")
+
 
 
 

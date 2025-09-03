@@ -492,7 +492,29 @@ if uploaded_file:
             st.download_button("⬇️ Baixar Programa Expandido (CSV)", gerar_csv(df_expandidos), "programa_expandido.csv", mime="text/csv")
         else:
             st.warning("Nenhum dado para exibir.")
-
+        # =========================
+        # Removidos globais (todos fornecedores)
+        # =========================
+        if df_antigo_expandidos is not None and not df_expandidos.empty:
+            caixas_atuais_global = set(df_expandidos['Caixa'])
+            caixas_antigas_global = set(df_antigo_expandidos['Caixa'])
+            caixas_removidas_global = caixas_antigas_global - caixas_atuais_global
+        
+            removidos_info_global = []
+            for caixa_antiga in caixas_removidas_global:
+                qtd_antiga = df_antigo_expandidos[df_antigo_expandidos['Caixa'] == caixa_antiga]['Quantidade'].sum()
+                estoque_inicial_removido = mapa_estoque.get(caixa_antiga, 0)
+                consumido_ate_agora_removido = 0  # Se quiser considerar consumo global, pode somar das semanas
+                estoque_disponivel_removido = estoque_inicial_removido - consumido_ate_agora_removido
+                estoque_emoji = "✅" if estoque_disponivel_removido > 0 else "⚠️"
+                removidos_info_global.append(
+                    f"{estoque_emoji} ❌ **{caixa_antiga}** | Estoque: {max(0, estoque_disponivel_removido):.0f} | Removido (Antes: {qtd_antiga:.0f})"
+                )
+        
+            if removidos_info_global:
+                st.markdown("## ❌ Itens removidos de todos os fornecedores (programa anterior)")
+                for info in removidos_info_global:
+                    st.markdown(info)
     # =========================
     # Dados por Fornecedor (NOVO)
     # =========================
@@ -614,19 +636,6 @@ if uploaded_file:
                                     # vamos considerar todas as datas do programa anterior para este fornecedor
                                     caixas_antigas = {}
                                     total_dia_antigo = 0
-                                    # Calcular caixas removidas nesta semana (apenas uma vez por semana)
-                                    caixas_atuais_semana = set(df_semana_atual['Caixa'])
-                                    caixas_antigas_semana = set(df_semana_antiga['Caixa']) if df_semana_antiga is not None else set()
-                                    caixas_removidas_semana = caixas_antigas_semana - caixas_atuais_semana
-                                    
-                                    removidos_info = []
-                                    for caixa_antiga in caixas_removidas_semana:
-                                        qtd_antiga = df_semana_antiga[df_semana_antiga['Caixa'] == caixa_antiga]['Quantidade'].sum() if df_semana_antiga is not None else 0
-                                        estoque_inicial_removido = mapa_estoque.get(caixa_antiga, 0)
-                                        consumido_ate_agora_removido = estoque_consumido_global.get(caixa_antiga, 0)
-                                        estoque_disponivel_removido = estoque_inicial_removido - consumido_ate_agora_removido
-                                        estoque_emoji = "✅" if estoque_disponivel_removido > 0 else "⚠️"
-                                        removidos_info.append(f"{estoque_emoji} ❌ **{caixa_antiga}** | Estoque: {max(0, estoque_disponivel_removido):.0f} | Removido (Antes: {qtd_antiga:.0f})")
                                    
                                     if df_forn_antigo is not None and not df_forn_antigo.empty:
                                         # Criar um dicionário com TODAS as caixas do programa anterior para este fornecedor
@@ -750,10 +759,6 @@ if uploaded_file:
                                                 st.markdown(item)
                                         else:
                                             st.info("Sem itens")
-                                        if removidos_info:
-                                            st.markdown("### ❌ Itens removidos nesta semana")
-                                            for info in removidos_info:
-                                                st.markdown(info)
                                 
                                 # Adicionar legenda dos símbolos após os dias
                                 st.markdown("---")
@@ -942,6 +947,7 @@ if uploaded_file and not df_expandidos.empty and uploaded_old_file and df_antigo
                 st.info(f"Itens adiados: {len(adiados)}")
             else:
                 st.info("Nenhum item adiado.")
+
 
 
 

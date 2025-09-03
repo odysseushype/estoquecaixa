@@ -2,12 +2,6 @@ import pandas as pd
 import streamlit as st
 from datetime import timedelta
 import re
-import matplotlib.pyplot as plt
-import seaborn as sns
-import io
-import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime
 
 # =========================
 # Mapeamento de Caixa para Fornecedor
@@ -326,337 +320,6 @@ def processar_estoque(uploaded_stock_file):
         return {}, None, None, None
 
 # =========================
-# Função para gerar relatórios analíticos
-# =========================
-def gerar_relatorio_analise(df_novo_expandidos, df_antigo_expandidos, df_novo, df_antigo):
-    relatorios = {}
-    
-    # Se não temos dados de comparação, retornar dicionário vazio
-    if df_antigo_expandidos is None or df_antigo is None or df_novo_expandidos is None or df_novo is None:
-        return relatorios
-    
-    # 1. Análise por Fornecedor
-    fornecedores = sorted(set(df_novo_expandidos['Fornecedor'].unique()) | set(df_antigo_expandidos['Fornecedor'].unique()))
-    
-    # Dataframe para análise por fornecedor
-    analise_fornecedor = []
-    
-    for fornecedor in fornecedores:
-        # Filtrar dados para este fornecedor
-        df_novo_forn = df_novo_expandidos[df_novo_expandidos['Fornecedor'] == fornecedor]
-        df_antigo_forn = df_antigo_expandidos[df_antigo_expandidos['Fornecedor'] == fornecedor]
-        
-        # Caixas únicas em cada programa
-        caixas_novas = set(df_novo_forn['Caixa'])
-        caixas_antigas = set(df_antigo_forn['Caixa'])
-        
-        # Calcular adições e remoções
-        caixas_adicionadas = caixas_novas - caixas_antigas
-        caixas_removidas = caixas_antigas - caixas_novas
-        caixas_mantidas = caixas_novas.intersection(caixas_antigas)
-        
-        # Calcular volumes
-        total_novo = df_novo_forn['Quantidade'].sum()
-        total_antigo = df_antigo_forn['Quantidade'].sum()
-        variacao_volume = total_novo - total_antigo
-        variacao_percentual = (variacao_volume / total_antigo * 100) if total_antigo > 0 else 0
-        
-        # Adicionar à lista de análise
-        analise_fornecedor.append({
-            'Fornecedor': fornecedor,
-            'Total Atual': total_novo,
-            'Total Anterior': total_antigo,
-            'Variação': variacao_volume,
-            'Variação %': variacao_percentual,
-            'Caixas Adicionadas': len(caixas_adicionadas),
-            'Caixas Removidas': len(caixas_removidas),
-            'Caixas Mantidas': len(caixas_mantidas)
-        })
-    
-    # Criar DataFrame de análise por fornecedor
-    df_analise_fornecedor = pd.DataFrame(analise_fornecedor)
-    relatorios['analise_fornecedor'] = df_analise_fornecedor
-    
-    # 2. Análise de mudanças nas datas de entrega
-    # Criar campos para comparação
-    df_novo['Ordem-split'] = df_novo['Ordem / oper / split / Descrição'].astype(str).str.strip()
-    df_antigo['Ordem-split'] = df_antigo['Ordem / oper / split / Descrição'].astype(str).str.strip()
-    
-    # Juntar tabelas para comparar datas
-    df_merge = pd.merge(
-        df_novo[['Ordem-split', 'Item/descrição', 'Inicio', 'Termino', 'Quantidade', 'Caixa']],
-        df_antigo[['Ordem-split', 'Inicio', 'Termino', 'Quantidade', 'Caixa']],
-        on='Ordem-split',
-        suffixes=('_novo', '_antigo')
-    )
-    
-    # Filtrar apenas os que tiveram mudança de data
-    alterados_data = df_merge[
-        (df_merge['Inicio_novo'] != df_merge['Inicio_antigo']) | 
-        (df_merge['Termino_novo'] != df_merge['Termino_antigo'])
-    ]
-    
-    # Calcular diferenças em horas
-    if not alterados_data.empty:
-        alterados_data['Dif_Inicio_Horas'] = (alterados_data['Inicio_novo'] - alterados_data['Inicio_antigo']).dt.total_seconds() / 3600
-        alterados_data['Status'] = alterados_data.apply(
-            lambda x: "Antecipado" if x['Dif_Inicio_Horas'] < -12 else 
-                    ("Adiado" if x['Dif_Inicio_Horas'] > 12 else "Alteração Menor"),
-            axis=1
-        )
-        
-        # Adicionar informação do fornecedor
-        alterados_data['Fornecedor'] = alterados_data['Caixa_novo'].map(mapa_fornecedor)
-        
-        # Análise por tipo de alteração
-        analise_alteracoes = alterados_data['Status'].value_counts().reset_index()
-        analise_alteracoes.columns = ['Tipo de Alteração', 'Quantidade']
-        
-        # Análise por fornecedor
-        analise_alteracoes_fornecedor = alterados_data.groupby(['Fornecedor', 'Status']).size().reset_index()
-        analise_alteracoes_fornecedor.columns = ['Fornecedor', 'Tipo de Alteração', 'Quantidade']
-        
-        relatorios['analise_alteracoes'] = analise_alteracoes
-        relatorios['analise_alteracoes_fornecedor'] = analise_alteracoes_fornecedor
-        relatorios['alterados_data_completo'] = alterados_data
-    
-    # 3. Análise de adições e remoções de itens
-    # Itens novos
-    novos_itens = df_novo[~df_novo['Ordem-split'].isin(df_antigo['Ordem-split'])]
-    if not novos_itens.empty:
-        novos_itens['Fornecedor'] = novos_itens['Caixa'].map(mapa_fornecedor)
-        analise_novos = novos_itens.groupby('Fornecedor')['Quantidade'].agg(['sum', 'count']).reset_index()
-        analise_novos.columns = ['Fornecedor', 'Volume Total', 'Quantidade de Itens']
-        relatorios['analise_novos_itens'] = analise_novos
-        relatorios['novos_itens_completo'] = novos_itens
-    
-    # Itens removidos
-    removidos_itens = df_antigo[~df_antigo['Ordem-split'].isin(df_novo['Ordem-split'])]
-    if not removidos_itens.empty:
-        removidos_itens['Fornecedor'] = removidos_itens['Caixa'].map(mapa_fornecedor)
-        analise_removidos = removidos_itens.groupby('Fornecedor')['Quantidade'].agg(['sum', 'count']).reset_index()
-        analise_removidos.columns = ['Fornecedor', 'Volume Total', 'Quantidade de Itens']
-        relatorios['analise_removidos_itens'] = analise_removidos
-        relatorios['removidos_itens_completo'] = removidos_itens
-    
-    # 4. Análise de alterações de quantidade nos mesmos itens
-    itens_mantidos = df_merge[df_merge['Ordem-split'].isin(df_novo['Ordem-split']) & df_merge['Ordem-split'].isin(df_antigo['Ordem-split'])]
-    if not itens_mantidos.empty:
-        itens_mantidos['Variação_Quantidade'] = itens_mantidos['Quantidade_novo'] - itens_mantidos['Quantidade_antigo']
-        itens_mantidos['Percentual_Variação'] = (itens_mantidos['Variação_Quantidade'] / itens_mantidos['Quantidade_antigo']) * 100
-        itens_mantidos['Fornecedor'] = itens_mantidos['Caixa_novo'].map(mapa_fornecedor)
-        
-        # Filtrar apenas os que tiveram alteração de quantidade
-        alterados_qtd = itens_mantidos[itens_mantidos['Quantidade_novo'] != itens_mantidos['Quantidade_antigo']]
-        
-        if not alterados_qtd.empty:
-            # Análise de alterações de quantidade por fornecedor
-            analise_alteracoes_qtd = alterados_qtd.groupby('Fornecedor').agg({
-                'Variação_Quantidade': ['sum', 'mean', 'std', 'count'],
-                'Percentual_Variação': ['mean', 'min', 'max']
-            }).reset_index()
-            
-            # Achatar os nomes das colunas
-            analise_alteracoes_qtd.columns = [
-                '_'.join(col).strip() if col[1] else col[0] for col in analise_alteracoes_qtd.columns.values
-            ]
-            
-            relatorios['analise_alteracoes_qtd'] = analise_alteracoes_qtd
-            relatorios['alterados_qtd_completo'] = alterados_qtd
-    
-    # 5. Análise temporal de entregas
-    df_novo_expandidos['Dia Entrega'] = pd.to_datetime(df_novo_expandidos['Dia Entrega'])
-    df_antigo_expandidos['Dia Entrega'] = pd.to_datetime(df_antigo_expandidos['Dia Entrega'])
-    
-    # Agrupar por dia de entrega
-    entregas_por_dia_novo = df_novo_expandidos.groupby([df_novo_expandidos['Dia Entrega'].dt.date, 'Fornecedor'])['Quantidade'].sum().reset_index()
-    entregas_por_dia_antigo = df_antigo_expandidos.groupby([df_antigo_expandidos['Dia Entrega'].dt.date, 'Fornecedor'])['Quantidade'].sum().reset_index()
-    
-    # Renomear colunas
-    entregas_por_dia_novo.columns = ['Data', 'Fornecedor', 'Quantidade_Novo']
-    entregas_por_dia_antigo.columns = ['Data', 'Fornecedor', 'Quantidade_Antigo']
-    
-    # Mesclar os dois dataframes
-    entregas_comparativo = pd.merge(entregas_por_dia_novo, entregas_por_dia_antigo, 
-                                   on=['Data', 'Fornecedor'], how='outer').fillna(0)
-    
-    # Calcular variações
-    entregas_comparativo['Variação'] = entregas_comparativo['Quantidade_Novo'] - entregas_comparativo['Quantidade_Antigo']
-    entregas_comparativo['Variação_Percentual'] = (entregas_comparativo['Variação'] / entregas_comparativo['Quantidade_Antigo']) * 100
-    entregas_comparativo['Variação_Percentual'] = entregas_comparativo['Variação_Percentual'].replace([float('inf'), -float('inf')], 0)
-    
-    relatorios['entregas_comparativo'] = entregas_comparativo
-    
-    return relatorios
-
-# =========================
-# Função para gerar visualizações
-# =========================
-def gerar_visualizacoes(relatorios):
-    graficos = {}
-    
-    if not relatorios:
-        return graficos
-    
-    # 1. Gráfico de Variação por Fornecedor
-    if 'analise_fornecedor' in relatorios:
-        df = relatorios['analise_fornecedor']
-        
-        # Gráfico de barras com a variação por fornecedor
-        fig_variacao = px.bar(
-            df,
-            x='Fornecedor',
-            y='Variação',
-            color='Variação',
-            labels={'Variação': 'Variação no Volume', 'Fornecedor': 'Fornecedor'},
-            title='Variação de Volume por Fornecedor',
-            color_continuous_scale=px.colors.sequential.Blues
-        )
-        fig_variacao.update_layout(height=500)
-        graficos['variacao_fornecedor'] = fig_variacao
-        
-        # Gráfico de barras para adições e remoções
-        fig_add_rem = go.Figure()
-        fig_add_rem.add_trace(go.Bar(
-            x=df['Fornecedor'],
-            y=df['Caixas Adicionadas'],
-            name='Caixas Adicionadas',
-            marker_color='green'
-        ))
-        fig_add_rem.add_trace(go.Bar(
-            x=df['Fornecedor'],
-            y=df['Caixas Removidas'],
-            name='Caixas Removidas',
-            marker_color='red'
-        ))
-        fig_add_rem.update_layout(
-            title='Adições e Remoções de Caixas por Fornecedor',
-            xaxis_title='Fornecedor',
-            yaxis_title='Número de Caixas',
-            barmode='group',
-            height=500
-        )
-        graficos['add_rem_fornecedor'] = fig_add_rem
-    
-    # 2. Gráfico de Alterações de Data
-    if 'analise_alteracoes' in relatorios:
-        df = relatorios['analise_alteracoes']
-        
-        # Gráfico de pizza com tipos de alterações
-        fig_alteracoes = px.pie(
-            df, 
-            values='Quantidade', 
-            names='Tipo de Alteração',
-            title='Distribuição dos Tipos de Alterações de Data',
-            color='Tipo de Alteração',
-            color_discrete_map={
-                'Antecipado': 'green',
-                'Adiado': 'red',
-                'Alteração Menor': 'gray'
-            },
-            hole=0.3
-        )
-        fig_alteracoes.update_layout(height=500)
-        graficos['alteracoes_data'] = fig_alteracoes
-    
-    # 3. Gráfico de Alterações por Fornecedor
-    if 'analise_alteracoes_fornecedor' in relatorios:
-        df = relatorios['analise_alteracoes_fornecedor']
-        
-        fig_alteracoes_fornecedor = px.bar(
-            df,
-            x='Fornecedor',
-            y='Quantidade',
-            color='Tipo de Alteração',
-            title='Alterações de Data por Fornecedor',
-            barmode='group',
-            color_discrete_map={
-                'Antecipado': 'green',
-                'Adiado': 'red',
-                'Alteração Menor': 'gray'
-            }
-        )
-        fig_alteracoes_fornecedor.update_layout(height=500)
-        graficos['alteracoes_fornecedor'] = fig_alteracoes_fornecedor
-    
-    # 4. Gráfico de Itens Novos vs. Removidos por Fornecedor
-    if 'analise_novos_itens' in relatorios and 'analise_removidos_itens' in relatorios:
-        df_novos = relatorios['analise_novos_itens']
-        df_removidos = relatorios['analise_removidos_itens']
-        
-        # Garantir que todos os fornecedores estejam presentes em ambos os DataFrames
-        fornecedores = list(set(df_novos['Fornecedor'].tolist() + df_removidos['Fornecedor'].tolist()))
-        
-        df_novos_completo = pd.DataFrame({'Fornecedor': fornecedores})
-        df_novos_completo = pd.merge(df_novos_completo, df_novos, on='Fornecedor', how='left').fillna(0)
-        
-        df_removidos_completo = pd.DataFrame({'Fornecedor': fornecedores})
-        df_removidos_completo = pd.merge(df_removidos_completo, df_removidos, on='Fornecedor', how='left').fillna(0)
-        
-        fig_nov_rem = go.Figure()
-        fig_nov_rem.add_trace(go.Bar(
-            x=df_novos_completo['Fornecedor'],
-            y=df_novos_completo['Quantidade de Itens'],
-            name='Itens Novos',
-            marker_color='green'
-        ))
-        fig_nov_rem.add_trace(go.Bar(
-            x=df_removidos_completo['Fornecedor'],
-            y=df_removidos_completo['Quantidade de Itens'],
-            name='Itens Removidos',
-            marker_color='red'
-        ))
-        fig_nov_rem.update_layout(
-            title='Itens Novos vs. Removidos por Fornecedor',
-            xaxis_title='Fornecedor',
-            yaxis_title='Quantidade de Itens',
-            barmode='group',
-            height=500
-        )
-        graficos['novos_removidos'] = fig_nov_rem
-    
-    # 5. Gráfico de Entregas por Dia
-    if 'entregas_comparativo' in relatorios:
-        df = relatorios['entregas_comparativo']
-        
-        # Preparar dados para o gráfico
-        df = df.sort_values('Data')
-        df['Data'] = df['Data'].astype(str)
-        
-        fig_entregas = go.Figure()
-        
-        for fornecedor in df['Fornecedor'].unique():
-            df_forn = df[df['Fornecedor'] == fornecedor]
-            
-            fig_entregas.add_trace(go.Scatter(
-                x=df_forn['Data'],
-                y=df_forn['Quantidade_Novo'],
-                mode='lines+markers',
-                name=f'{fornecedor} - Atual',
-                line=dict(width=2)
-            ))
-            
-            fig_entregas.add_trace(go.Scatter(
-                x=df_forn['Data'],
-                y=df_forn['Quantidade_Antigo'],
-                mode='lines+markers',
-                name=f'{fornecedor} - Anterior',
-                line=dict(dash='dash', width=2)
-            ))
-        
-        fig_entregas.update_layout(
-            title='Evolução das Entregas por Dia e Fornecedor',
-            xaxis_title='Data de Entrega',
-            yaxis_title='Quantidade',
-            height=600,
-            legend_title='Fornecedor e Programa',
-            hovermode='x unified'
-        )
-        graficos['entregas_diarias'] = fig_entregas
-    
-    return graficos
-
-# =========================
 # Configuração Streamlit
 # =========================
 st.set_page_config(page_title="Cronograma de Produção", layout="wide")
@@ -768,12 +431,6 @@ if uploaded_stock_file:
         df_estoque = df_estoque.sort_values('Quantidade', ascending=False)
         st.dataframe(df_estoque, use_container_width=True)
 
-# Inicializar variáveis para relatórios
-relatorios_analise = {}
-graficos_analise = {}
-df_expandidos = pd.DataFrame()
-df_novo = pd.DataFrame()
-
 # Processamento do arquivo principal
 if uploaded_file:
     df_novo = processar_excel(uploaded_file, tipo="novo")
@@ -813,7 +470,7 @@ if uploaded_file:
             st.warning("Nenhum dado para exibir.")
     
     # =========================
-    # Dados por Fornecedor
+    # Dados por Fornecedor (NOVO)
     # =========================
     st.subheader("🏭 Dados por Fornecedor")
     if not df_expandidos.empty:
@@ -1112,472 +769,165 @@ else:
 # =========================
 # Adicionar comparativo com programa antigo (após visualização principal)
 # =========================
-    # =========================
-    # NOVA SEÇÃO: Relatórios e Análises Avançadas
-    # =========================
+
+if uploaded_file and not df_expandidos.empty and uploaded_old_file and df_antigo is not None:
     st.divider()
-    st.header("📊 Relatórios e Análises Avançadas")
+    st.subheader("🔄 Comparação com Programa Anterior")
     
-    # Gerar todos os relatórios analíticos
-    with st.spinner("Gerando relatórios de análise..."):
-        relatorios_analise = gerar_relatorio_analise(df_expandidos, df_antigo_expandidos, df_novo, df_antigo)
-        graficos_analise = gerar_visualizacoes(relatorios_analise)
+    # Mostrar programa antigo em expansor
+    with st.expander("📋 Programa Anterior (limpo)"):
+        st.dataframe(df_antigo, use_container_width=True)
+        st.download_button("⬇️ Baixar Programa Anterior (CSV)", 
+                          gerar_csv(df_antigo), 
+                          "programa_anterior.csv", 
+                          mime="text/csv")
+
+    # Criar campos para comparação
+    df_novo['Ordem-split'] = df_novo['Ordem / oper / split / Descrição'].astype(str).str.strip()
+    df_antigo['Ordem-split'] = df_antigo['Ordem / oper / split / Descrição'].astype(str).str.strip()
+
+    # Agrupar por ordem-split (primeira ocorrência)
+    df_novo_first = df_novo.groupby('Ordem-split', as_index=False).first()
+    df_antigo_first = df_antigo.groupby('Ordem-split', as_index=False).first()
+
+    # Criar três colunas para mostrar os comparativos
+    col1, col2 = st.columns(2)
     
-    # Mostrar os relatórios apenas se forem gerados com sucesso
-    if relatorios_analise:
-        # 1. Resumo das principais alterações
-        st.subheader("📑 Resumo das Alterações")
-        
-        resumo_tabs = st.tabs(["Alterações por Fornecedor", "Alterações de Data", "Entregas Diárias"])
-        
-        # Tab 1: Alterações por Fornecedor
-        with resumo_tabs[0]:
-            if 'analise_fornecedor' in relatorios_analise:
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    if 'variacao_fornecedor' in graficos_analise:
-                        st.plotly_chart(graficos_analise['variacao_fornecedor'], use_container_width=True)
-                
-                with col2:
-                    if 'add_rem_fornecedor' in graficos_analise:
-                        st.plotly_chart(graficos_analise['add_rem_fornecedor'], use_container_width=True)
-                
-                # Tabela detalhada de alterações por fornecedor
-                st.subheader("Detalhes por Fornecedor")
-                st.dataframe(relatorios_analise['analise_fornecedor'], use_container_width=True)
-                
-                # Botão para download do relatório
-                st.download_button(
-                    "⬇️ Baixar Relatório de Alterações por Fornecedor (CSV)",
-                    gerar_csv(relatorios_analise['analise_fornecedor']),
-                    "alteracoes_fornecedor.csv",
-                    mime="text/csv"
-                )
-        
-        # Tab 2: Alterações de Data
-        with resumo_tabs[1]:
-            col1, col2 = st.columns(2)
+    # Coluna 1: Itens Novos
+    with col1:
+        st.markdown("### 🆕 Itens Novos")
+        novos = df_novo_first[~df_novo_first['Ordem-split'].isin(df_antigo_first['Ordem-split'])]
+        if not novos.empty:
+            # Criar cópia para formatação
+            novos_display = novos.copy()
+            # Formatar a quantidade como inteiro
+            novos_display['Quantidade'] = novos_display['Quantidade'].fillna(0).astype(int)
             
-            with col1:
-                if 'alteracoes_data' in graficos_analise:
-                    st.plotly_chart(graficos_analise['alteracoes_data'], use_container_width=True)
-            
-            with col2:
-                if 'alteracoes_fornecedor' in graficos_analise:
-                    st.plotly_chart(graficos_analise['alteracoes_fornecedor'], use_container_width=True)
-            
-            # Estatísticas de alterações de data
-            if 'analise_alteracoes' in relatorios_analise:
-                st.subheader("Resumo de Alterações de Data")
-                df_alteracoes = relatorios_analise['analise_alteracoes']
-                
-                # Mostrar estatísticas em colunas
-                col1, col2, col3 = st.columns(3)
-                total_alteracoes = df_alteracoes['Quantidade'].sum()
-                
-                with col1:
-                    antecipacoes = df_alteracoes[df_alteracoes['Tipo de Alteração'] == 'Antecipado']['Quantidade'].sum() if 'Antecipado' in df_alteracoes['Tipo de Alteração'].values else 0
-                    st.metric("Antecipações", f"{antecipacoes}", f"{antecipacoes/total_alteracoes*100:.1f}%" if total_alteracoes > 0 else "0%")
-                
-                with col2:
-                    adiamentos = df_alteracoes[df_alteracoes['Tipo de Alteração'] == 'Adiado']['Quantidade'].sum() if 'Adiado' in df_alteracoes['Tipo de Alteração'].values else 0
-                    st.metric("Adiamentos", f"{adiamentos}", f"{adiamentos/total_alteracoes*100:.1f}%" if total_alteracoes > 0 else "0%")
-                
-                with col3:
-                    alteracoes_menores = df_alteracoes[df_alteracoes['Tipo de Alteração'] == 'Alteração Menor']['Quantidade'].sum() if 'Alteração Menor' in df_alteracoes['Tipo de Alteração'].values else 0
-                    st.metric("Alterações Menores", f"{alteracoes_menores}", f"{alteracoes_menores/total_alteracoes*100:.1f}%" if total_alteracoes > 0 else "0%")
-                
-                # Mostrar tabela completa de alterações
-                if 'alterados_data_completo' in relatorios_analise:
-                    with st.expander("Ver todos os itens com alteração de data"):
-                        df_alterados_completo = relatorios_analise['alterados_data_completo']
-                        
-                        # Formatar colunas para visualização
-                        df_display = df_alterados_completo.copy()
-                        if 'Inicio_novo' in df_display.columns and 'Inicio_antigo' in df_display.columns:
-                            for col in ['Inicio_novo', 'Inicio_antigo', 'Termino_novo', 'Termino_antigo']:
-                                if isinstance(df_display[col].iloc[0], pd.Timestamp):
-                                    df_display[col] = df_display[col].dt.strftime('%d/%m/%Y %H:%M')
-                        
-                        # Selecionar colunas relevantes
-                        cols_to_display = ['Ordem-split', 'Item/descrição', 'Fornecedor', 
-                                          'Inicio_antigo', 'Inicio_novo', 'Status', 'Dif_Inicio_Horas']
-                        
-                        st.dataframe(df_display[cols_to_display], use_container_width=True)
-                        
-                        # Botão para download
-                        st.download_button(
-                            "⬇️ Baixar Relatório Completo de Alterações de Data (CSV)",
-                            gerar_csv(df_alterados_completo),
-                            "alteracoes_data_completo.csv",
-                            mime="text/csv"
-                        )
-        
-        # Tab 3: Entregas Diárias
-        with resumo_tabs[2]:
-            if 'entregas_diarias' in graficos_analise:
-                st.plotly_chart(graficos_analise['entregas_diarias'], use_container_width=True)
-            
-            if 'entregas_comparativo' in relatorios_analise:
-                with st.expander("Ver dados completos de entregas por dia"):
-                    df_entregas = relatorios_analise['entregas_comparativo']
-                    st.dataframe(df_entregas, use_container_width=True)
-                    
-                    # Botão para download
-                    st.download_button(
-                        "⬇️ Baixar Relatório de Entregas por Dia (CSV)",
-                        gerar_csv(df_entregas),
-                        "entregas_diarias.csv",
-                        mime="text/csv"
-                    )
-        
-        # 2. Análise de Adições e Remoções
-        st.subheader("🔄 Análise de Adições e Remoções")
-        
-        add_rem_tabs = st.tabs(["Resumo de Adições/Remoções", "Itens Adicionados", "Itens Removidos"])
-        
-        # Tab 1: Resumo
-        with add_rem_tabs[0]:
-            # Gráfico de barras para novos vs. removidos
-            if 'novos_removidos' in graficos_analise:
-                st.plotly_chart(graficos_analise['novos_removidos'], use_container_width=True)
-            
-            # Resumo em números
-            col1, col2, col3 = st.columns(3)
-            
-            total_novos = len(relatorios_analise.get('novos_itens_completo', pd.DataFrame())) if 'novos_itens_completo' in relatorios_analise else 0
-            total_removidos = len(relatorios_analise.get('removidos_itens_completo', pd.DataFrame())) if 'removidos_itens_completo' in relatorios_analise else 0
-            balanco = total_novos - total_removidos
-            
-            with col1:
-                st.metric("Total de Itens Adicionados", f"{total_novos}")
-            
-            with col2:
-                st.metric("Total de Itens Removidos", f"{total_removidos}")
-            
-            with col3:
-                delta_color = "normal" if balanco >= 0 else "inverse"
-                st.metric("Balanço (Adições - Remoções)", f"{balanco}", delta=f"{balanco:+d}", delta_color=delta_color)
-        
-        # Tab 2: Itens Adicionados
-        with add_rem_tabs[1]:
-            if 'novos_itens_completo' in relatorios_analise and not relatorios_analise['novos_itens_completo'].empty:
-                df_novos = relatorios_analise['novos_itens_completo']
-                
-                # Agrupar por fornecedor para mostrar resumo
-                resumo_novos = df_novos.groupby('Fornecedor').agg({
-                    'Quantidade': ['sum', 'count']
-                }).reset_index()
-                
-                resumo_novos.columns = ['Fornecedor', 'Volume Total', 'Quantidade de Itens']
-                
-                st.subheader("Resumo de Itens Adicionados por Fornecedor")
-                st.dataframe(resumo_novos, use_container_width=True)
-                
-                # Mostrar lista completa em expansor
-                with st.expander("Ver todos os itens adicionados"):
-                    # Formatar para visualização
-                    df_novos_display = df_novos.copy()
-                    if 'Inicio' in df_novos_display.columns and isinstance(df_novos_display['Inicio'].iloc[0], pd.Timestamp):
-                        df_novos_display['Inicio'] = df_novos_display['Inicio'].dt.strftime('%d/%m/%Y %H:%M')
-                    
-                    # Selecionar colunas relevantes
-                    cols_to_display = ['Ordem-split', 'Item/descrição', 'Fornecedor', 'Inicio', 'Caixa', 'Quantidade']
-                    
-                    st.dataframe(df_novos_display[cols_to_display], use_container_width=True)
-                    
-                    # Botão para download
-                    st.download_button(
-                        "⬇️ Baixar Relatório de Itens Adicionados (CSV)",
-                        gerar_csv(df_novos),
-                        "itens_adicionados.csv",
-                        mime="text/csv"
-                    )
-            else:
-                st.info("Nenhum item adicionado identificado.")
-        
-        # Tab 3: Itens Removidos
-        with add_rem_tabs[2]:
-            if 'removidos_itens_completo' in relatorios_analise and not relatorios_analise['removidos_itens_completo'].empty:
-                df_removidos = relatorios_analise['removidos_itens_completo']
-                
-                # Agrupar por fornecedor para mostrar resumo
-                resumo_removidos = df_removidos.groupby('Fornecedor').agg({
-                    'Quantidade': ['sum', 'count']
-                }).reset_index()
-                
-                resumo_removidos.columns = ['Fornecedor', 'Volume Total', 'Quantidade de Itens']
-                
-                st.subheader("Resumo de Itens Removidos por Fornecedor")
-                st.dataframe(resumo_removidos, use_container_width=True)
-                
-                # Mostrar lista completa em expansor
-                with st.expander("Ver todos os itens removidos"):
-                    # Formatar para visualização
-                    df_removidos_display = df_removidos.copy()
-                    if 'Inicio' in df_removidos_display.columns and isinstance(df_removidos_display['Inicio'].iloc[0], pd.Timestamp):
-                        df_removidos_display['Inicio'] = df_removidos_display['Inicio'].dt.strftime('%d/%m/%Y %H:%M')
-                    
-                    # Selecionar colunas relevantes
-                    cols_to_display = ['Ordem-split', 'Item/descrição', 'Fornecedor', 'Inicio', 'Caixa', 'Quantidade']
-                    
-                    st.dataframe(df_removidos_display[cols_to_display], use_container_width=True)
-                    
-                    # Botão para download
-                    st.download_button(
-                        "⬇️ Baixar Relatório de Itens Removidos (CSV)",
-                        gerar_csv(df_removidos),
-                        "itens_removidos.csv",
-                        mime="text/csv"
-                    )
-            else:
-                st.info("Nenhum item removido identificado.")
-        
-        # 3. Relatório de Impacto no Estoque
-        if mapa_estoque:
-            st.subheader("📦 Relatório de Impacto no Estoque")
-            
-            # Criar análise de impacto no estoque
-            impact_tabs = st.tabs(["Visão Geral", "Itens sem Estoque", "Itens Removidos com Estoque"])
-            
-            # Tab 1: Visão Geral
-            with impact_tabs[0]:
-                # Analisar impacto no estoque das caixas atuais
-                caixas_programa_atual = df_expandidos.groupby('Caixa')['Quantidade'].sum().reset_index()
-                caixas_programa_atual['Em Estoque'] = caixas_programa_atual['Caixa'].map(lambda x: mapa_estoque.get(x, 0))
-                caixas_programa_atual['Diferença'] = caixas_programa_atual['Em Estoque'] - caixas_programa_atual['Quantidade']
-                caixas_programa_atual['Status'] = caixas_programa_atual['Diferença'].apply(
-                    lambda x: "Suficiente" if x >= 0 else "Insuficiente"
-                )
-                caixas_programa_atual['Fornecedor'] = caixas_programa_atual['Caixa'].map(mapa_fornecedor)
-                
-                # Estatísticas gerais
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    total_necessario = caixas_programa_atual['Quantidade'].sum()
-                    total_disponivel = caixas_programa_atual['Em Estoque'].sum()
-                    st.metric(
-                        "Total Necessário vs. Disponível", 
-                        f"{total_necessario:.0f}",
-                        f"Estoque: {total_disponivel:.0f} ({(total_disponivel/total_necessario*100):.1f}%)" if total_necessario > 0 else "N/A"
-                    )
-                
-                with col2:
-                    caixas_com_estoque_suficiente = len(caixas_programa_atual[caixas_programa_atual['Status'] == 'Suficiente'])
-                    percentual_suficiente = (caixas_com_estoque_suficiente / len(caixas_programa_atual) * 100) if len(caixas_programa_atual) > 0 else 0
-                    st.metric(
-                        "Caixas com Estoque Suficiente", 
-                        f"{caixas_com_estoque_suficiente}/{len(caixas_programa_atual)}",
-                        f"{percentual_suficiente:.1f}%"
-                    )
-                
-                with col3:
-                    caixas_sem_estoque = len(caixas_programa_atual[caixas_programa_atual['Status'] == 'Insuficiente'])
-                    percentual_insuficiente = (caixas_sem_estoque / len(caixas_programa_atual) * 100) if len(caixas_programa_atual) > 0 else 0
-                    st.metric(
-                        "Caixas com Estoque Insuficiente", 
-                        f"{caixas_sem_estoque}/{len(caixas_programa_atual)}",
-                        f"{percentual_insuficiente:.1f}%",
-                        delta_color="inverse"
-                    )
-                
-                # Gráfico de barras empilhadas para mostrar a situação por fornecedor
-                resumo_estoque_fornecedor = caixas_programa_atual.groupby(['Fornecedor', 'Status']).size().reset_index()
-                resumo_estoque_fornecedor.columns = ['Fornecedor', 'Status', 'Quantidade']
-                
-                fig_estoque_status = px.bar(
-                    resumo_estoque_fornecedor,
-                    x='Fornecedor',
-                    y='Quantidade',
-                    color='Status',
-                    title='Status de Estoque por Fornecedor',
-                    color_discrete_map={'Suficiente': 'green', 'Insuficiente': 'red'}
-                )
-                st.plotly_chart(fig_estoque_status, use_container_width=True)
-            
-            # Tab 2: Itens sem Estoque
-            with impact_tabs[1]:
-                caixas_sem_estoque_df = caixas_programa_atual[caixas_programa_atual['Status'] == 'Insuficiente'].sort_values('Diferença')
-                
-                if not caixas_sem_estoque_df.empty:
-                    st.subheader("Itens com Estoque Insuficiente")
-                    
-                    # Adicionar coluna de prioridade
-                    caixas_sem_estoque_df['Prioridade'] = caixas_sem_estoque_df['Diferença'].apply(
-                        lambda x: "Alta" if x <= -100 else ("Média" if x <= -50 else "Baixa")
-                    )
-                    
-                    # Agrupar por fornecedor e prioridade
-                    resumo_prioridade = caixas_sem_estoque_df.groupby(['Fornecedor', 'Prioridade']).size().reset_index()
-                    resumo_prioridade.columns = ['Fornecedor', 'Prioridade', 'Quantidade']
-                    
-                    # Gráfico de barras para prioridades
-                    fig_prioridade = px.bar(
-                        resumo_prioridade,
-                        x='Fornecedor',
-                        y='Quantidade',
-                        color='Prioridade',
-                        title='Itens sem Estoque Suficiente por Prioridade',
-                        color_discrete_map={'Alta': 'red', 'Média': 'orange', 'Baixa': 'yellow'}
-                    )
-                    st.plotly_chart(fig_prioridade, use_container_width=True)
-                    
-                    # Mostrar tabela detalhada
-                    st.dataframe(caixas_sem_estoque_df[[
-                        'Caixa', 'Fornecedor', 'Quantidade', 'Em Estoque', 'Diferença', 'Prioridade'
-                    ]].sort_values(['Fornecedor', 'Prioridade']), use_container_width=True)
-                    
-                    # Botão para download
-                    st.download_button(
-                        "⬇️ Baixar Relatório de Itens sem Estoque Suficiente (CSV)",
-                        gerar_csv(caixas_sem_estoque_df),
-                        "itens_sem_estoque.csv",
-                        mime="text/csv"
-                    )
-                else:
-                    st.success("Todos os itens do programa possuem estoque suficiente!")
-            
-            # Tab 3: Itens Removidos com Estoque
-            with impact_tabs[2]:
-                if 'removidos_itens_completo' in relatorios_analise and not relatorios_analise['removidos_itens_completo'].empty:
-                    df_removidos = relatorios_analise['removidos_itens_completo']
-                    df_removidos['Em Estoque'] = df_removidos['Caixa'].map(lambda x: mapa_estoque.get(x, 0))
-                    df_removidos_com_estoque = df_removidos[df_removidos['Em Estoque'] > 0]
-                    
-                    if not df_removidos_com_estoque.empty:
-                        st.subheader("Itens Removidos que ainda possuem Estoque")
-                        
-                        # Agrupar por fornecedor
-                        resumo_removidos_estoque = df_removidos_com_estoque.groupby('Fornecedor').agg({
-                            'Quantidade': 'count',
-                            'Em Estoque': 'sum'
-                        }).reset_index()
-                        
-                        resumo_removidos_estoque.columns = ['Fornecedor', 'Quantidade de Itens', 'Volume em Estoque']
-                        
-                        # Mostrar resumo
-                        st.dataframe(resumo_removidos_estoque, use_container_width=True)
-                        
-                        # Gráfico de barras para itens removidos com estoque
-                        fig_removidos_estoque = px.bar(
-                            resumo_removidos_estoque,
-                            x='Fornecedor',
-                            y='Volume em Estoque',
-                            title='Estoque Disponível de Itens Removidos',
-                            color='Fornecedor'
-                        )
-                        st.plotly_chart(fig_removidos_estoque, use_container_width=True)
-                        
-                        # Mostrar tabela detalhada
-                        with st.expander("Ver detalhes dos itens removidos com estoque"):
-                            # Formatar para visualização
-                            df_removidos_display = df_removidos_com_estoque.copy()
-                            if 'Inicio' in df_removidos_display.columns and isinstance(df_removidos_display['Inicio'].iloc[0], pd.Timestamp):
-                                df_removidos_display['Inicio'] = df_removidos_display['Inicio'].dt.strftime('%d/%m/%Y %H:%M')
-                            
-                            st.dataframe(df_removidos_display[[
-                                'Caixa', 'Fornecedor', 'Em Estoque', 'Item/descrição'
-                            ]], use_container_width=True)
-                            
-                            # Botão para download
-                            st.download_button(
-                                "⬇️ Baixar Relatório de Itens Removidos com Estoque (CSV)",
-                                gerar_csv(df_removidos_com_estoque),
-                                "itens_removidos_com_estoque.csv",
-                                mime="text/csv"
-                            )
-                    else:
-                        st.info("Nenhum item removido possui estoque disponível.")
-                else:
-                    st.info("Não há itens removidos para analisar.")
-        
-        # 4. Relatório completo para download
-        st.subheader("📄 Gerar Relatório Completo")
-        
-        # Criar buffer para escrever o Excel
-        if st.button("📊 Gerar Relatório Completo (Excel)"):
-            with st.spinner("Gerando relatório completo..."):
-                try:
-                    # Criar buffer de memória para o arquivo Excel
-                    output = io.BytesIO()
-                    
-                    # Criar escritor Excel com Pandas
-                    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-                        # 1. Resumo por Fornecedor
-                        if 'analise_fornecedor' in relatorios_analise:
-                            relatorios_analise['analise_fornecedor'].to_excel(writer, sheet_name='Resumo_Fornecedor', index=False)
-                        
-                        # 2. Alterações de Data
-                        if 'alterados_data_completo' in relatorios_analise:
-                            # Formatar colunas de data
-                            df_alterados = relatorios_analise['alterados_data_completo'].copy()
-                            for col in ['Inicio_novo', 'Inicio_antigo', 'Termino_novo', 'Termino_antigo']:
-                                if isinstance(df_alterados[col].iloc[0], pd.Timestamp):
-                                    df_alterados[col] = df_alterados[col].dt.strftime('%d/%m/%Y %H:%M')
-                            
-                            df_alterados.to_excel(writer, sheet_name='Alterações_Data', index=False)
-                        
-                        # 3. Itens Adicionados
-                        if 'novos_itens_completo' in relatorios_analise:
-                            # Formatar colunas de data
-                            df_novos = relatorios_analise['novos_itens_completo'].copy()
-                            if 'Inicio' in df_novos.columns and isinstance(df_novos['Inicio'].iloc[0], pd.Timestamp):
-                                df_novos['Inicio'] = df_novos['Inicio'].dt.strftime('%d/%m/%Y %H:%M')
-                            
-                            df_novos.to_excel(writer, sheet_name='Itens_Adicionados', index=False)
-                        
-                        # 4. Itens Removidos
-                        if 'removidos_itens_completo' in relatorios_analise:
-                            # Formatar colunas de data
-                            df_removidos = relatorios_analise['removidos_itens_completo'].copy()
-                            if 'Inicio' in df_removidos.columns and isinstance(df_removidos['Inicio'].iloc[0], pd.Timestamp):
-                                df_removidos['Inicio'] = df_removidos['Inicio'].dt.strftime('%d/%m/%Y %H:%M')
-                            
-                            df_removidos.to_excel(writer, sheet_name='Itens_Removidos', index=False)
-                        
-                        # 5. Entregas Diárias
-                        if 'entregas_comparativo' in relatorios_analise:
-                            df_entregas = relatorios_analise['entregas_comparativo'].copy()
-                            # Converter data para string se for datetime
-                            if isinstance(df_entregas['Data'].iloc[0], pd.Timestamp):
-                                df_entregas['Data'] = df_entregas['Data'].dt.strftime('%d/%m/%Y')
-                            
-                            df_entregas.to_excel(writer, sheet_name='Entregas_Diárias', index=False)
-                        
-                        # 6. Análise de Estoque
-                        if mapa_estoque:
-                            # Criar análise de estoque
-                            caixas_programa_atual = df_expandidos.groupby('Caixa')['Quantidade'].sum().reset_index()
-                            caixas_programa_atual['Em Estoque'] = caixas_programa_atual['Caixa'].map(lambda x: mapa_estoque.get(x, 0))
-                            caixas_programa_atual['Diferença'] = caixas_programa_atual['Em Estoque'] - caixas_programa_atual['Quantidade']
-                            caixas_programa_atual['Status'] = caixas_programa_atual['Diferença'].apply(
-                                lambda x: "Suficiente" if x >= 0 else "Insuficiente"
-                            )
-                            caixas_programa_atual['Fornecedor'] = caixas_programa_atual['Caixa'].map(mapa_fornecedor)
-                            
-                            caixas_programa_atual.to_excel(writer, sheet_name='Análise_Estoque', index=False)
-                    
-                    # Reset pointer do BytesIO para o início
-                    output.seek(0)
-                    
-                    # Obter timestamp para nome do arquivo
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    
-                    # Mostrar botão de download
-                    st.download_button(
-                        label="⬇️ Baixar Relatório Completo (Excel)",
-                        data=output,
-                        file_name=f"relatorio_completo_{timestamp}.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                    
-                    st.success("Relatório completo gerado com sucesso!")
-                    
-                except Exception as e:
-                    st.error(f"Erro ao gerar relatório completo: {str(e)}")
-    else:
-        st.warning("Não foi possível gerar relatórios de análise. Certifique-se de que os arquivos do programa atual e anterior foram carregados corretamente.")
+            st.dataframe(novos_display[['Ordem-split', 'Item/descrição', 'Inicio', 'Caixa', 'Quantidade']], 
+                        use_container_width=True)
+            st.download_button("⬇️ Baixar Itens Novos", 
+                              gerar_csv(novos), 
+                              "itens_novos.csv", 
+                              mime="text/csv")
+            st.info(f"Total de itens novos: {len(novos)}")
+        else:
+            st.info("Nenhum item novo detectado.")
 
+    # Coluna 2: Itens Removidos
+    with col2:
+        st.markdown("### 🗑️ Itens Removidos")
+        removidos = df_antigo_first[~df_antigo_first['Ordem-split'].isin(df_novo_first['Ordem-split'])]
+        if not removidos.empty:
+            # Criar cópia para formatação
+            removidos_display = removidos.copy()
+            # Formatar a quantidade como inteiro
+            removidos_display['Quantidade'] = removidos_display['Quantidade'].fillna(0).astype(int)
+            
+            st.dataframe(removidos_display[['Ordem-split', 'Item/descrição', 'Inicio', 'Caixa', 'Quantidade']],
+                        use_container_width=True)
+            st.download_button("⬇️ Baixar Itens Removidos", 
+                              gerar_csv(removidos), 
+                              "itens_removidos.csv", 
+                              mime="text/csv")
+            st.info(f"Total de itens removidos: {len(removidos)}")
+        else:
+            st.info("Nenhum item foi removido.")
 
+    # Itens com mudanças de data
+    st.markdown("### ⏱️ Itens com Alterações de Data")
+    
+    # Juntar tabelas para comparar datas
+    df_merge = pd.merge(
+        df_novo_first[['Ordem-split', 'Item/descrição', 'Inicio', 'Termino', 'Quantidade']],
+        df_antigo_first[['Ordem-split', 'Inicio', 'Termino', 'Quantidade']],
+        on='Ordem-split',
+        suffixes=('_novo', '_antigo')
+    )
+    
+    # Filtrar apenas os que tiveram mudança de data
+    alterados_data = df_merge[
+        (df_merge['Inicio_novo'] != df_merge['Inicio_antigo']) | 
+        (df_merge['Termino_novo'] != df_merge['Termino_antigo'])
+    ]
+    
+    # Criar tabela de comparação
+    if not alterados_data.empty:
+        # Formatar para visualização
+        df_alterados = alterados_data.copy()
+        
+        # Calcular diferenças em horas
+        df_alterados['Dif_Inicio_Horas'] = (df_alterados['Inicio_novo'] - df_alterados['Inicio_antigo']).dt.total_seconds() / 3600
+        
+        # Converter diferença de horas para formato HH:MM
+        def horas_para_hhmm(horas):
+            # Preservar o sinal
+            sinal = '-' if horas < 0 else ''
+            horas_abs = abs(horas)
+            horas_int = int(horas_abs)
+            minutos = int((horas_abs - horas_int) * 60)
+            return f"{sinal}{horas_int:02d}:{minutos:02d}"
+        
+        # Criar coluna formatada para exibição
+        df_alterados['Diferença'] = df_alterados['Dif_Inicio_Horas'].apply(horas_para_hhmm)
+        
+        # ADICIONAR EXPLICITAMENTE a classificação das alterações
+        df_alterados['Status'] = df_alterados.apply(
+            lambda x: "Antecipado" if x['Dif_Inicio_Horas'] < -12 else 
+                    ("Adiado" if x['Dif_Inicio_Horas'] > 12 else "Alteração Menor"),
+            axis=1
+        )
+        
+        # Formatar datas para visualização
+        for col in ['Inicio_novo', 'Inicio_antigo']:
+            df_alterados[col] = df_alterados[col].dt.strftime('%d/%m/%Y %H:%M')
+        
+        # Renomear colunas para nomes mais claros
+        colunas_renomeadas = {
+            'Ordem-split': 'Ordem',
+            'Item/descrição': 'Descrição',
+            'Inicio_antigo': 'Data Anterior',
+            'Inicio_novo': 'Data Atual',
+            'Diferença': 'Diferença (HH:MM)',
+            'Status': 'Status'
+        }
+        
+        # Criar abas para visualizar por tipo de alteração
+        status_tabs = st.tabs(["Todas Alterações", "Antecipados", "Adiados"])
+        
+        with status_tabs[0]:
+            st.dataframe(
+                df_alterados[['Ordem-split', 'Item/descrição', 'Inicio_antigo', 'Inicio_novo', 
+                             'Diferença', 'Status']].rename(columns=colunas_renomeadas),
+                use_container_width=True
+            )
+            st.download_button("⬇️ Baixar Todas Alterações", 
+                              gerar_csv(df_alterados), 
+                              "todas_alteracoes.csv", 
+                              mime="text/csv")
+            st.info(f"Total de itens com alterações de data: {len(df_alterados)}")
+        
+        with status_tabs[1]:
+            # Filtrar após garantir que a coluna existe
+            antecipados = df_alterados[df_alterados['Status'] == 'Antecipado']
+            if not antecipados.empty:
+                st.dataframe(
+                    antecipados[['Ordem-split', 'Item/descrição', 'Inicio_antigo', 'Inicio_novo', 
+                                'Diferença']].rename(columns=colunas_renomeadas),
+                    use_container_width=True
+                )
+                st.info(f"Itens antecipados: {len(antecipados)}")
+            else:
+                st.info("Nenhum item antecipado.")
+        
+        with status_tabs[2]:
+            # Usar a coluna Status para filtrar
+            adiados = df_alterados[df_alterados['Status'] == "Adiado"]
+            if not adiados.empty:
+                st.dataframe(
+                    adiados[['Ordem-split', 'Item/descrição', 'Inicio_antigo', 'Inicio_novo', 
+                            'Diferença']].rename(columns=colunas_renomeadas),
+                    use_container_width=True
+                )
+                st.info(f"Itens adiados: {len(adiados)}")
+            else:
+                st.info("Nenhum item adiado.")

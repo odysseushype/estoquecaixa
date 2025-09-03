@@ -552,20 +552,7 @@ if uploaded_file:
                 # Criar semanas_unicas
                 semanas_unicas = [f"{semana}/{ano}" for semana, ano in zip(df_semana['Semana'], df_semana['Ano'])]
                 semanas_unicas = sorted(set(semanas_unicas))  # Remove duplicados e ordena
-                                                    # Calcular caixas removidas nesta semana (apenas uma vez por semana)
-                                    caixas_atuais_semana = set(df_semana_atual['Caixa'])
-                                    caixas_antigas_semana = set(df_semana_antiga['Caixa']) if df_semana_antiga is not None else set()
-                                    caixas_removidas_semana = caixas_antigas_semana - caixas_atuais_semana
-                                    
-                                    removidos_info = []
-                                    for caixa_antiga in caixas_removidas_semana:
-                                        qtd_antiga = df_semana_antiga[df_semana_antiga['Caixa'] == caixa_antiga]['Quantidade'].sum() if df_semana_antiga is not None else 0
-                                        estoque_inicial_removido = mapa_estoque.get(caixa_antiga, 0)
-                                        consumido_ate_agora_removido = estoque_consumido_global.get(caixa_antiga, 0)
-                                        estoque_disponivel_removido = estoque_inicial_removido - consumido_ate_agora_removido
-                                        estoque_emoji = "✅" if estoque_disponivel_removido > 0 else "⚠️"
-                                        removidos_info.append(f"{estoque_emoji} ❌ **{caixa_antiga}** | Estoque: {max(0, estoque_disponivel_removido):.0f} | Removido (Antes: {qtd_antiga:.0f})")
-                                   
+
                 # Criar abas para cada semana
                 semana_tabs = st.tabs([f"📅 Semana {semana_str}" for semana_str in semanas_unicas])
                 
@@ -627,7 +614,20 @@ if uploaded_file:
                                     # vamos considerar todas as datas do programa anterior para este fornecedor
                                     caixas_antigas = {}
                                     total_dia_antigo = 0
-
+                                    # Calcular caixas removidas nesta semana (apenas uma vez por semana)
+                                    caixas_atuais_semana = set(df_semana_atual['Caixa'])
+                                    caixas_antigas_semana = set(df_semana_antiga['Caixa']) if df_semana_antiga is not None else set()
+                                    caixas_removidas_semana = caixas_antigas_semana - caixas_atuais_semana
+                                    
+                                    removidos_info = []
+                                    for caixa_antiga in caixas_removidas_semana:
+                                        qtd_antiga = df_semana_antiga[df_semana_antiga['Caixa'] == caixa_antiga]['Quantidade'].sum() if df_semana_antiga is not None else 0
+                                        estoque_inicial_removido = mapa_estoque.get(caixa_antiga, 0)
+                                        consumido_ate_agora_removido = estoque_consumido_global.get(caixa_antiga, 0)
+                                        estoque_disponivel_removido = estoque_inicial_removido - consumido_ate_agora_removido
+                                        estoque_emoji = "✅" if estoque_disponivel_removido > 0 else "⚠️"
+                                        removidos_info.append(f"{estoque_emoji} ❌ **{caixa_antiga}** | Estoque: {max(0, estoque_disponivel_removido):.0f} | Removido (Antes: {qtd_antiga:.0f})")
+                                   
                                     if df_forn_antigo is not None and not df_forn_antigo.empty:
                                         # Criar um dicionário com TODAS as caixas do programa anterior para este fornecedor
                                         df_caixas_antigas_geral = df_forn_antigo.groupby('Caixa')['Quantidade'].sum().reset_index()
@@ -942,6 +942,7 @@ if uploaded_file and not df_expandidos.empty and uploaded_old_file and df_antigo
                 st.info(f"Itens adiados: {len(adiados)}")
             else:
                 st.info("Nenhum item adiado.")
+
 
 
 

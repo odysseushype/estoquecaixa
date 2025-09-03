@@ -931,3 +931,4 @@ if uploaded_file and not df_expandidos.empty and uploaded_old_file and df_antigo
                 st.info(f"Itens adiados: {len(adiados)}")
             else:
                 st.info("Nenhum item adiado.")
+
